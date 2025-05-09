@@ -1,0 +1,159 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Gauss-Seidel Load Flow Solver</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      margin: 40px;
+      background: #f4f4f4;
+      color: #333;
+    }
+    textarea {
+      width: 100%;
+      height: 120px;
+      margin: 10px 0;
+      padding: 10px;
+      font-family: monospace;
+    }
+    button {
+      padding: 10px 20px;
+      margin-bottom: 20px;
+    }
+    pre {
+      background: #fff;
+      padding: 20px;
+      border: 1px solid #ccc;
+      white-space: pre-wrap;
+    }
+  </style>
+</head>
+<body>
+  <h1>Gauss-Seidel Load Flow Solver (PQ & PV Buses)</h1>
+
+  <textarea id="busData" placeholder="Enter bus data: BusNum,Type,P,Q,V,Theta"></textarea>
+  <textarea id="lineData" placeholder="Enter line data: From,To,R,X,B"></textarea>
+  <button onclick="solve()">Run Load Flow</button>
+  <pre id="output"></pre>
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/mathjs/11.3.1/math.min.js"></script>
+  <script>
+    function parseBusData(text) {
+      return text.trim().split("\n").map(line => {
+        const [num, type, P, Q, V, theta] = line.split(',').map(x => x.trim());
+        return {
+          num: parseInt(num),
+          type,
+          P: parseFloat(P),
+          Q: parseFloat(Q),
+          V: parseFloat(V),
+          theta: parseFloat(theta),
+        };
+      });
+    }
+
+    function parseLineData(text) {
+      return text.trim().split("\n").map(line => {
+        const [from, to, R, X, B] = line.split(',').map(x => x.trim());
+        return {
+          from: parseInt(from),
+          to: parseInt(to),
+          R: parseFloat(R),
+          X: parseFloat(X),
+          B: parseFloat(B),
+        };
+      });
+    }
+
+    function polarToRect(V, theta) {
+      const rad = theta * Math.PI / 180;
+      return math.complex({ abs: V, arg: rad });
+    }
+
+    function rectToPolar(V) {
+      return {
+        V: math.abs(V),
+        theta: math.arg(V) * 180 / Math.PI
+      };
+    }
+
+    function buildYBus(buses, lines) {
+      const n = buses.length;
+      let Y = Array(n).fill().map(() => Array(n).fill(math.complex(0, 0)));
+
+      for (const line of lines) {
+        const i = line.from - 1;
+        const j = line.to - 1;
+        const z = math.complex(line.R, line.X);
+        const y = math.divide(1, z);
+        const b_shunt = math.complex(0, line.B / 2);
+
+        Y[i][i] = math.add(Y[i][i], y, b_shunt);
+        Y[j][j] = math.add(Y[j][j], y, b_shunt);
+        Y[i][j] = math.subtract(Y[i][j], y);
+        Y[j][i] = math.subtract(Y[j][i], y);
+      }
+
+      return Y;
+    }
+
+    function solve() {
+      const busData = parseBusData(document.getElementById("busData").value);
+      const lineData = parseLineData(document.getElementById("lineData").value);
+      const n = busData.length;
+      const Y = buildYBus(busData, lineData);
+
+      let V = busData.map(b => polarToRect(b.V, b.theta));
+      const maxIter = 100;
+      const tol = 1e-6;
+
+      for (let iter = 0; iter < maxIter; iter++) {
+        let maxErr = 0;
+
+        for (let i = 0; i < n; i++) {
+          const bus = busData[i];
+          if (bus.type === 'Slack') continue;
+
+          let sum = math.complex(0, 0);
+          for (let j = 0; j < n; j++) {
+            if (j !== i) {
+              sum = math.add(sum, math.multiply(Y[i][j], V[j]));
+            }
+          }
+
+          const Yii = Y[i][i];
+          const S = math.complex(bus.P, -bus.Q);
+          const Vi_old = V[i];
+          let Vi_new = math.divide(math.subtract(S, math.multiply(sum, Vi_old)), Yii);
+          Vi_new = math.divide(Vi_new, Vi_old);
+          Vi_new = math.add(math.divide(S, math.conj(math.multiply(Yii, Vi_old))), sum);
+          Vi_new = math.divide(math.subtract(S, math.multiply(sum, Vi_old)), Yii);
+          Vi_new = math.divide(S, math.conj(sum));
+          Vi_new = math.divide(math.add(S, math.multiply(math.conj(sum), Vi_old)), Yii);
+
+          V[i] = math.divide(S, math.conj(sum));
+
+          if (bus.type === 'PV') {
+            const angle = math.arg(V[i]);
+            V[i] = math.complex({ abs: bus.V, arg: angle });
+          }
+
+          const err = math.abs(math.subtract(V[i], Vi_old));
+          maxErr = Math.max(maxErr, err);
+        }
+
+        if (maxErr < tol) break;
+      }
+
+      let output = "Final Bus Voltages:\n";
+      for (let i = 0; i < n; i++) {
+        const { V: mag, theta } = rectToPolar(V[i]);
+        output += `Bus ${busData[i].num}: V = ${mag.toFixed(4)} ∠ ${theta.toFixed(2)}°\n`;
+      }
+
+      document.getElementById("output").textContent = output;
+    }
+  </script>
+</body>
+</html>
